@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git clone:*)",
+      "Bash(bash .claude/skills/web-artifacts-builder/scripts/init-artifact.sh brief-processor)",
+      "Bash(npm install:*)",
+      "Bash(where:*)",
+      "Bash(echo:*)",
+      "Bash(export:*)",
+      "Bash(bash ../. claude/skills/web-artifacts-builder/scripts/bundle-artifact.sh)",
+      "Bash(bash \"/d/Claude Code/Project 1/.claude/skills/web-artifacts-builder/scripts/bundle-artifact.sh\")",
+      "mcp__Claude_Preview__preview_start",
+      "Bash(node inline-bundle.cjs)",
+      "Bash(curl -s -X POST http://localhost:3001/api/generate-document -H \"Content-Type: application/json\" -d '{:*)",
+      "Bash(tasklist)",
+      "Bash(xargs taskkill //PID //F)",
+      "Bash(mcp__Claude_Preview__preview_start brief-processor)"
+    ]
+  }
+}

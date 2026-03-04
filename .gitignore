@@ -1,0 +1,11 @@
+node_modules/
+brief-processor/node_modules/
+server/node_modules/
+*.log
+
+# Keep bundle.html (pre-built frontend — required for deployment)
+# Do NOT gitignore brief-processor/bundle.html
+
+# Secret — never commit
+server/.env
+.env

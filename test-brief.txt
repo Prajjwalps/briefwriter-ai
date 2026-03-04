@@ -1,0 +1,14 @@
+Write a 500-word essay on Artificial Intelligence and its impact on healthcare.
+
+Requirements:
+- APA 7 citation style
+- Include at least 3 peer-reviewed sources
+- Focus on both benefits and challenges
+- Discuss ethical considerations
+
+Structure:
+1. Introduction - Define AI and healthcare context
+2. Benefits of AI in Healthcare - Diagnostic tools, treatment planning
+3. Challenges and Limitations - Data privacy, accuracy concerns
+4. Ethical Considerations - Bias, accountability, human oversight
+5. Conclusion - Future of AI in healthcare
