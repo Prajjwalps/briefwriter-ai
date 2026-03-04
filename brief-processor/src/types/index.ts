@@ -157,3 +157,49 @@ export interface ProjectState {
   briefContext: BriefContext;
   currentScreen: number;
 }
+
+// ─── Screen 4: Sequential Document Generation ───────────────────────────
+
+export interface SectionToGenerate {
+  name: string;                    // "Main Analysis"
+  wordCount: number;               // Target words for this section
+  index: number;                   // 1-indexed position (1, 2, 3, ...)
+  description: string;             // 1-2 sentences from outline
+  citationGuidance: string;        // "Cite refs 1,3,5" or similar
+}
+
+export interface GeneratedSection {
+  sectionName: string;
+  content: string;                 // Generated content (NO markdown headings)
+  wordCount: number;               // Actual words generated
+  inTextCitations: string[];       // ["Smith (2020)", "Jones & Brown (2021)"]
+  citationsUsed?: { referenceIndices: number[] };
+  timestamp: string;
+  error?: string;                  // Error message if generation failed
+  retryCount: number;              // Number of retry attempts
+}
+
+export interface GenerationState {
+  status: 'idle' | 'formatting-confirm' | 'generating' | 'complete' | 'error';
+  totalSections: number;           // Total sections to generate
+  completedCount: number;          // Sections successfully generated
+  failedCount: number;             // Sections that failed
+  currentSection: string;          // "Main Analysis" (human readable)
+  currentSectionIndex: number;     // 1-indexed (2 for "2 of 5")
+
+  // Generated sections stored by name
+  generatedSections: { [sectionName: string]: GeneratedSection };
+
+  // Progress tracking
+  progress: number;                // 0-100
+  progressLabel: string;           // "Generating section 2 of 5: Main Analysis"
+
+  // Error tracking
+  error: string | null;            // General error message
+  failedSections: string[];        // Array of failed section names
+
+  // Final document
+  documentText: string | null;     // Combined sections + references
+  documentTitle: string;           // "Subject - TaskType"
+  docxBase64: string | null;       // Base64-encoded DOCX file
+}

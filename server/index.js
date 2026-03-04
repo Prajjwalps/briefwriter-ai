@@ -843,6 +843,145 @@ Distribute ${detectedWordLimit} words proportionally. Return ONLY the outline, n
   }
 });
 
+// ── Section Generation endpoint (Sequential Document Building) ──────────────────────
+app.post('/api/generate-section', async (req, res) => {
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) {
+    return res.status(500).json({ error: 'OPENROUTER_API_KEY not set.' });
+  }
+
+  const {
+    sectionName,
+    sectionDescription,
+    wordCount,
+    sectionIndex,
+    totalSections,
+    briefContext = {},
+    selectedReferences = [],
+    citationGuidance = '',
+    referenceStyle = 'APA 7',
+    tone = 'Academic',
+    outlineFullText = '',
+  } = req.body;
+
+  if (!sectionName || !wordCount) {
+    return res.status(400).json({ error: 'sectionName and wordCount are required.' });
+  }
+
+  try {
+    const { subject = 'Assignment', taskType = 'Essay', keywords = [], summary = '' } = briefContext;
+
+    // Build focused system prompt for this section only
+    const systemPrompt = `You are an expert academic writer. Your ONLY job is to write section ${sectionIndex} of ${totalSections} titled "${sectionName}".
+
+CRITICAL RULES:
+1. Write ONLY the content for this section — NO markdown headings (# or ##), just the body text
+2. This is section ${sectionIndex} of ${totalSections}: "${sectionName}"
+3. Target approximately ${wordCount} words for this section
+4. Use ${referenceStyle} citation format: (Author Year) for in-text citations
+5. Maintain ${tone} tone throughout this section
+6. Do NOT include an introduction or conclusion for the whole essay — just this section's content
+7. Return ONLY the section body text with in-text citations`;
+
+    // Build user prompt with section-specific context
+    const userPrompt = `Write section ${sectionIndex} of ${totalSections} for the ${taskType} on "${subject}".
+
+SECTION: "${sectionName}"
+Description: ${sectionDescription}
+
+SECTION WORD ALLOCATION: Approximately ${wordCount} words
+
+OVERALL CONTEXT (for reference):
+Topic: ${subject}
+Task Type: ${taskType}
+Keywords: ${keywords.join(', ')}
+Summary: ${summary}
+
+AVAILABLE REFERENCES TO CITE (${referenceStyle}):
+${selectedReferences
+  .map((r, idx) => {
+    const authors = Array.isArray(r.authors) ? r.authors.join(', ') : r.authors || 'Unknown';
+    return `[${idx}] ${authors} (${r.year}). ${r.title}. ${r.sourceName}.`;
+  })
+  .join('\n')}
+
+${citationGuidance ? `CITATION GUIDANCE: ${citationGuidance}` : 'Use relevant citations where appropriate.'}
+
+REQUIREMENTS:
+- Write approximately ${wordCount} words for this section
+- Use in-text citations in ${referenceStyle} format: (Author Year)
+- Do NOT include section headings or markdown
+- Do NOT include introduction/conclusion for the full document
+- Focus ONLY on this section's content
+- Return plain text only`;
+
+    // Call Claude API with focused max_tokens for single section
+    const response = await fetch(OPENROUTER_URL, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'http://localhost:3001',
+        'X-Title': 'BriefWriter AI',
+      },
+      body: JSON.stringify({
+        model: OPENROUTER_MODEL,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+        max_tokens: 1500, // Per section (smaller than full document)
+      }),
+    });
+
+    if (!response.ok) {
+      const errBody = await response.text();
+      throw new Error(`OpenRouter ${response.status}: ${errBody.slice(0, 200)}`);
+    }
+
+    const data = await response.json();
+    const sectionContent = data.choices?.[0]?.message?.content ?? '';
+
+    if (!sectionContent) {
+      throw new Error('No content generated for section');
+    }
+
+    // Parse in-text citations from the content: (Author Year) pattern
+    const citationRegex = /\(([A-Za-z\s&]+\s+\d{4})\)/g;
+    const inTextCitations = [];
+    let match;
+    while ((match = citationRegex.exec(sectionContent)) !== null) {
+      inTextCitations.push(match[1]);
+    }
+
+    // Calculate actual word count
+    const actualWordCount = sectionContent.split(/\s+/).filter(w => w).length;
+
+    // Return section data
+    res.json({
+      success: true,
+      sectionName,
+      content: sectionContent,
+      wordCount: actualWordCount,
+      inTextCitations: [...new Set(inTextCitations)], // Deduplicate
+      citationsUsed: { referenceIndices: [] }, // Could track which refs were used
+      tokens: {
+        inputTokens: data.usage?.prompt_tokens ?? 0,
+        outputTokens: data.usage?.completion_tokens ?? 0,
+      },
+      timestamp: new Date().toISOString(),
+    });
+
+  } catch (err) {
+    console.error('[server] Generate section error:', err.message);
+    return res.status(502).json({
+      success: false,
+      error: `Section generation failed: ${err.message}`,
+      sectionName,
+    });
+  }
+});
+
 // ── Document Generation endpoint ────────────────────────────────────────────────────
 app.post('/api/generate-document', async (req, res) => {
   const apiKey = process.env.OPENROUTER_API_KEY;
@@ -1207,6 +1346,267 @@ REQUIREMENTS:
   } catch (err) {
     console.error('[server] Generate document error:', err.message);
     return res.status(502).json({ error: `Document generation failed: ${err.message}` });
+  }
+});
+
+// ── Assemble DOCX from Multiple Sections ─────────────────────────────────────
+app.post('/api/generate-docx-from-sections', async (req, res) => {
+  try {
+    const { title, briefContext = {}, generatedSections = [], selectedReferences = [], referenceStyle = 'APA 7', formatSettings = {} } = req.body;
+
+    if (!generatedSections || generatedSections.length === 0) {
+      return res.status(400).json({ error: 'At least one generated section is required.' });
+    }
+
+    // Helper function to parse formatted text with markdown
+    const parseFormattedText = (text, isBold = false, fontSize = 24) => {
+      const runs = [];
+      let remaining = text;
+
+      while (remaining.length > 0) {
+        const boldMatch = remaining.match(/^\*\*([^*]+)\*\*/);
+        if (boldMatch) {
+          runs.push(new TextRun({
+            text: boldMatch[1],
+            bold: true,
+            font: 'Times New Roman',
+            size: fontSize,
+          }));
+          remaining = remaining.slice(boldMatch[0].length);
+          continue;
+        }
+
+        const italicMatch = remaining.match(/^\*([^*]+)\*(?!\*)/);
+        if (italicMatch) {
+          runs.push(new TextRun({
+            text: italicMatch[1],
+            italics: true,
+            font: 'Times New Roman',
+            size: fontSize,
+          }));
+          remaining = remaining.slice(italicMatch[0].length);
+          continue;
+        }
+
+        const regularMatch = remaining.match(/^[^*]+/);
+        if (regularMatch) {
+          runs.push(new TextRun({
+            text: regularMatch[0],
+            bold: isBold,
+            font: 'Times New Roman',
+            size: fontSize,
+          }));
+          remaining = remaining.slice(regularMatch[0].length);
+        } else {
+          runs.push(new TextRun({
+            text: remaining.charAt(0),
+            bold: isBold,
+            font: 'Times New Roman',
+            size: fontSize,
+          }));
+          remaining = remaining.slice(1);
+        }
+      }
+
+      return runs;
+    };
+
+    const paragraphs = [];
+
+    // Add title (Heading 1: 14pt, bold, Times New Roman)
+    if (title) {
+      paragraphs.push(
+        new Paragraph({
+          children: [new TextRun({ text: title, bold: true, font: 'Times New Roman', size: 28 })],
+          heading: HeadingLevel.HEADING_1,
+          spacing: { after: 400 },
+          alignment: AlignmentType.JUSTIFIED,
+        })
+      );
+    }
+
+    // Add each generated section
+    generatedSections.forEach((section, idx) => {
+      // Section heading (Heading 2: 12pt, bold)
+      paragraphs.push(
+        new Paragraph({
+          children: [new TextRun({ text: section.sectionName, bold: true, font: 'Times New Roman', size: 24 })],
+          heading: HeadingLevel.HEADING_2,
+          spacing: { before: 200, after: 200 },
+          alignment: AlignmentType.JUSTIFIED,
+        })
+      );
+
+      // Section content (Body: 12pt, justified, Times New Roman)
+      const contentParagraphs = section.content.split('\n').filter(p => p.trim());
+      contentParagraphs.forEach((para, paraIdx) => {
+        const runs = parseFormattedText(para.trim(), false, 24); // 12pt body text
+        paragraphs.push(
+          new Paragraph({
+            children: runs,
+            spacing: { line: 240, after: 200, before: 0 },
+            alignment: AlignmentType.JUSTIFIED,
+            indent: { firstLine: 720 },
+          })
+        );
+      });
+    });
+
+    // Add References section
+    if (selectedReferences && selectedReferences.length > 0) {
+      paragraphs.push(
+        new Paragraph({
+          children: [new TextRun({ text: 'References', bold: true, font: 'Times New Roman', size: 24 })],
+          heading: HeadingLevel.HEADING_2,
+          spacing: { before: 400, after: 200 },
+          alignment: AlignmentType.JUSTIFIED,
+        })
+      );
+
+      // Add each reference separately
+      selectedReferences.forEach((ref) => {
+        let refText = '';
+        if (referenceStyle.toLowerCase().includes('apa')) {
+          const authors = Array.isArray(ref.authors) ? ref.authors.join(', ') : ref.authors || 'Unknown';
+          refText = `${authors} (${ref.year}). ${ref.title}. ${ref.sourceName}.`;
+        } else if (referenceStyle.toLowerCase().includes('mla')) {
+          const authors = Array.isArray(ref.authors) ? ref.authors.join(', ') : ref.authors || 'Unknown';
+          refText = `${authors}. "${ref.title}." ${ref.sourceName}, ${ref.year}.`;
+        } else if (referenceStyle.toLowerCase().includes('harvard')) {
+          const authors = Array.isArray(ref.authors) ? ref.authors.join(', ') : ref.authors || 'Unknown';
+          refText = `${authors} ${ref.year}, ${ref.title}, ${ref.sourceName}.`;
+        } else {
+          const authors = Array.isArray(ref.authors) ? ref.authors.join(', ') : ref.authors || 'Unknown';
+          refText = `${authors} (${ref.year}). ${ref.title}. ${ref.sourceName}.`;
+        }
+
+        // Add URL/DOI if available
+        if (ref.url) {
+          refText += ` Available at: ${ref.url}`;
+        } else if (ref.doi) {
+          refText += ` https://doi.org/${ref.doi}`;
+        }
+
+        paragraphs.push(
+          new Paragraph({
+            children: [new TextRun({ text: refText, font: 'Times New Roman', size: 24 })],
+            spacing: { line: 240, after: 200, before: 0 },
+            alignment: AlignmentType.JUSTIFIED,
+            indent: { firstLine: 720, left: 720 }, // Hanging indent
+          })
+        );
+      });
+    }
+
+    // Create document
+    const doc = new Document({
+      sections: [{
+        children: paragraphs,
+        properties: {
+          page: {
+            margins: {
+              top: 1440,
+              right: 1440,
+              bottom: 1440,
+              left: 1440,
+            },
+          },
+        },
+      }],
+    });
+
+    // Generate DOCX buffer
+    const docxBuffer = await Packer.toBuffer(doc);
+    const docxBase64 = docxBuffer.toString('base64');
+
+    // Calculate total word count
+    const totalWordCount = generatedSections.reduce((sum, s) => sum + (s.wordCount || 0), 0);
+
+    res.json({
+      success: true,
+      title,
+      totalWordCount,
+      docxBase64,
+      sections: generatedSections.length,
+      references: selectedReferences.length,
+      generatedAt: new Date().toISOString(),
+    });
+
+  } catch (err) {
+    console.error('[server] Generate DOCX from sections error:', err.message);
+    return res.status(502).json({ error: `DOCX generation failed: ${err.message}` });
+  }
+});
+
+// ── Generate References List ────────────────────────────────────────────────────
+app.post('/api/generate-references', async (req, res) => {
+  try {
+    const { selectedReferences = [], referenceStyle = 'APA 7' } = req.body;
+
+    if (!selectedReferences || selectedReferences.length === 0) {
+      return res.status(400).json({ error: 'At least one reference is required.' });
+    }
+
+    // Format references based on style
+    let formattedReferences = [];
+
+    selectedReferences.forEach((ref) => {
+      let formatted = '';
+
+      switch (referenceStyle.toLowerCase()) {
+        case 'apa7':
+        case 'apa 7':
+          // APA 7 Format: Authors (Year). Title. Source. URL
+          formatted = `${ref.authors.join(', ')} (${ref.year}). ${ref.title}. ${ref.sourceName}.`;
+          if (ref.doi) formatted += ` https://doi.org/${ref.doi}`;
+          else if (ref.url) formatted += ` ${ref.url}`;
+          break;
+
+        case 'mla9':
+        case 'mla 9':
+          // MLA 9 Format: Authors. "Title." Source, Year, URL.
+          formatted = `${ref.authors.join(', ')}. "${ref.title}." ${ref.sourceName}, ${ref.year}.`;
+          if (ref.url) formatted += ` ${ref.url}`;
+          break;
+
+        case 'harvard':
+          // Harvard Format: Authors, Year. Title. Source. URL.
+          formatted = `${ref.authors.join(', ')}, ${ref.year}. ${ref.title}. ${ref.sourceName}.`;
+          if (ref.url) formatted += ` Available at: ${ref.url}`;
+          break;
+
+        case 'chicago17':
+        case 'chicago 17':
+          // Chicago Format: Authors. "Title." Source, Year. URL.
+          formatted = `${ref.authors.join(', ')}. "${ref.title}." ${ref.sourceName}, ${ref.year}.`;
+          if (ref.url) formatted += ` Accessed from ${ref.url}`;
+          break;
+
+        default:
+          // Default: Authors (Year). Title. Source.
+          formatted = `${ref.authors.join(', ')} (${ref.year}). ${ref.title}. ${ref.sourceName}.`;
+          if (ref.url) formatted += ` ${ref.url}`;
+      }
+
+      formattedReferences.push({
+        id: ref.id,
+        original: ref.formattedReference || ref.title,
+        formatted: formatted,
+      });
+    });
+
+    res.json({
+      success: true,
+      referenceStyle,
+      count: formattedReferences.length,
+      references: formattedReferences,
+      formattedText: formattedReferences.map(r => r.formatted).join('\n\n'),
+      timestamp: new Date().toISOString(),
+    });
+
+  } catch (err) {
+    console.error('[server] Generate references error:', err.message);
+    return res.status(502).json({ error: `Reference generation failed: ${err.message}` });
   }
 });
 

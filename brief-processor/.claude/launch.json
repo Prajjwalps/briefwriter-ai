@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "Brief Processor Server",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["D:\\Claude Code\\Project 1\\server\\index.js"],
+      "port": 3001
+    }
+  ]
+}
