@@ -859,13 +859,13 @@ export default function Screen1({ onContinue }: Screen1Props) {
                   {isAnalysing ? (
                     <><Loader2 className="w-4 h-4 animate-spin" /> Analysing…</>
                   ) : canContinue ? (
-                    <>Continue to Requirements <ArrowRight className="w-4 h-4" /></>
+                    <>Continue to References <ArrowRight className="w-4 h-4" /></>
                   ) : !hasBriefContent ? (
                     'Upload or paste a brief to continue'
                   ) : !briefContext.analysisComplete ? (
                     'Analyse brief first to continue'
                   ) : (
-                    <>Continue to Requirements <ArrowRight className="w-4 h-4" /></>
+                    <>Continue to References <ArrowRight className="w-4 h-4" /></>
                   )}
                 </button>
 

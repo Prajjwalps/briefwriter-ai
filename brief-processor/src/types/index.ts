@@ -114,8 +114,9 @@ export interface EnhancedOutlineSection extends OutlineSection {
 }
 
 export interface EnhancedOutline {
-  sections: EnhancedOutlineSection[];
-  overallGuidance: string;  // Overall integration strategy
+  outline?: string;  // Condensed outline text (simplified format)
+  sections?: EnhancedOutlineSection[];  // Optional: for backwards compatibility
+  overallGuidance?: string;  // Optional: Overall integration strategy
   wordAllocation: Record<string, number>;  // section name → word count
 }
 

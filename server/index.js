@@ -722,7 +722,7 @@ app.post('/api/enhance-outline', async (req, res) => {
     return res.status(500).json({ error: 'OPENROUTER_API_KEY not set.' });
   }
 
-  const { briefContext = {}, selectedReferences = [], extraInstructions = '' } = req.body;
+  const { briefContext = {}, selectedReferences = [], extraInstructions = '', currentOutlineText = '', tone = 'Academic' } = req.body;
 
   if (!briefContext.outline || !Array.isArray(briefContext.outline)) {
     return res.status(400).json({ error: 'briefContext.outline is required.' });
@@ -734,55 +734,53 @@ app.post('/api/enhance-outline', async (req, res) => {
 
   const { outline, keywords = [], subject = '', taskType = '', summary = '', detectedWordLimit = 2000 } = briefContext;
 
-  const systemPrompt = `You are an expert academic writing structure advisor. Your role is to:
-1. Analyze the student's brief context and provided outline structure
-2. Examine the selected references the student has gathered
-3. Create a detailed, actionable enhanced outline showing:
-   - How to structure each section (refined from original)
-   - Which references belong in each section and why
-   - How to cite each source (quote, paraphrase, synthesis, compare)
-   - Specific integration guidance
+  const systemPrompt = `You are an academic outline specialist. Generate a structured outline in plain text — no JSON, no markdown fences.
 
-Return ONLY valid JSON array with no markdown fences and no explanation.`;
+Use EXACTLY this format for every section (three lines per section, blank line between sections):
 
+1. Section Name (~X words)
+   1–2 sentence description of what this section covers and argues, specific to the topic.
+   Cite: Author Surname (Year); Author2 Surname (Year2)
+
+Rules:
+- The first line of every section MUST follow the pattern: number. Name (~X words)
+- The second line (description) must be 1–2 concise sentences — no bullet points, no sub-headings
+- The third line (Cite) lists only references from the provided reference list that belong in that section; use "Author Surname (Year)" format; separate multiple with " ; "
+- Total outline length: approximately 300 words
+- Word counts must sum to the stated word limit
+- Writing Tone: ${tone}`;
+
+  // Build reference list for the AI to assign to sections
   const referenceList = selectedReferences
-    .map((r, idx) => `[${idx}] "${r.title}" (${r.year}, ${r.authors[0] ?? 'Unknown'}) - ${r.type}`)
+    .map((r, idx) => `[${idx + 1}] ${r.authors[0]?.split(',')[0] ?? 'Unknown'} (${r.year}) — "${r.title.slice(0, 80)}"`)
     .join('\n');
 
-  const userPrompt = `Enhance the outline for a student writing a ${taskType} on "${subject}".
+  // Build the base outline representation — prefer the user's edited text
+  const outlineBase = currentOutlineText.trim()
+    ? `Current Outline (user's edited version — preserve structure, enrich descriptions and citations):\n${currentOutlineText}`
+    : `Suggested Section Structure:\n${outline.map(s => `- ${s.section} (~${s.wordCount} words): ${s.points && s.points.length > 0 ? s.points.join('; ') : 'No points'}`).join('\n')}`;
 
-Student's Brief Context:
-- Summary: ${summary}
-- Word limit: ${detectedWordLimit} words
-- Keywords: ${keywords.join(', ')}
+  const userPrompt = `${extraInstructions.trim() ? `⚠️ MANDATORY USER REQUIREMENTS — follow these exactly, they override everything else:
+${extraInstructions.trim()}
 
-Original Outline Structure:
-${outline.map(s => `- ${s.section} (~${s.wordCount} words): ${s.points.join('; ')}`).join('\n')}
+` : ''}Generate a structured outline for the ${taskType} on "${subject}".
 
-Selected References (${selectedReferences.length}):
+${outlineBase}
+
+Available References (assign relevant ones to each section):
 ${referenceList}
 
-${extraInstructions ? `Special Instructions: ${extraInstructions}\n` : ''}
+Assignment Context:
+- Total word limit: ${detectedWordLimit} words
+- Keywords: ${keywords.join(', ')}
+- Reference style: ${briefContext.detectedReferenceStyle || 'apa7'}
 
-For EACH section in the original outline, provide a detailed enhancement in this JSON format:
-[
-  {
-    "section": "Original section name or refined version",
-    "wordCount": <number>,
-    "points": ["key point 1", "key point 2", "key point 3"],
-    "description": "<100-150 words describing what should go in this section and how>",
-    "referenceMappings": {
-      "referenceIndices": [<which references from the list above, by index>],
-      "guidance": "<50-100 words on how to integrate these sources - quote, paraphrase, compare, etc.>"
-    }
-  }
-]
+Output a plain-text outline (~300 words total) with EVERY section showing:
+  Line 1: number. Section Name (~X words)
+  Line 2: 1–2 sentence description specific to this ${taskType}
+  Line 3: Cite: [relevant references in Author Surname (Year) format]
 
-Also provide:
-- "overallGuidance": "<100-150 words on overall strategy for integrating sources throughout the essay>"
-- Ensure word counts sum to approximately ${detectedWordLimit}
-- Show exactly which references should be used in which sections
-- Return ONLY the JSON array and guidance, no other text.`;
+Distribute ${detectedWordLimit} words proportionally. Return ONLY the outline, nothing else.`;
 
   try {
     const response = await fetch(OPENROUTER_URL, {
@@ -799,7 +797,7 @@ Also provide:
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
         ],
-        max_tokens: 2500,
+        max_tokens: 3000,
       }),
     });
 
@@ -811,41 +809,31 @@ Also provide:
     const data = await response.json();
     let responseText = data.choices?.[0]?.message?.content ?? '';
 
-    // Extract JSON array (Claude may wrap it in explanation)
-    const fenceMatch = responseText.match(/```(?:json)?\s*([\s\S]*?)```/);
-    const stripped = fenceMatch ? fenceMatch[1] : responseText;
-    const arrayMatch = stripped.match(/\[\s*\{[\s\S]*?\}\s*\]/);
+    // Parse plain text outline
+    const outlineText = responseText.trim();
 
-    let enhancedSections = [];
-    let overallGuidance = '';
+    // Extract sections and word counts using regex: "1. Section Name (~X words)"
+    const sectionRegex = /^[\d]+\.\s+(.+?)\s*\(~?(\d+)\s*words?\)/gm;
+    const wordAllocation = {};
+    let match;
+    const sections = [];
 
-    try {
-      const parsed = JSON.parse((arrayMatch ? arrayMatch[0] : stripped).trim());
-      if (Array.isArray(parsed)) {
-        enhancedSections = parsed;
-      } else if (parsed.sections) {
-        enhancedSections = parsed.sections;
-        overallGuidance = parsed.overallGuidance || '';
-      }
-    } catch (parseErr) {
-      console.error('[server] Failed to parse enhanced outline:', responseText.slice(0, 300));
-      throw new Error('Could not parse outline response');
+    while ((match = sectionRegex.exec(outlineText)) !== null) {
+      const sectionName = match[1].trim();
+      const wordCount = parseInt(match[2], 10);
+      sections.push(sectionName);
+      wordAllocation[sectionName] = wordCount;
     }
 
     // Validation
-    if (!Array.isArray(enhancedSections) || enhancedSections.length === 0) {
-      throw new Error('Invalid enhanced outline response');
+    if (sections.length === 0) {
+      console.error('[server] No sections parsed from outline:', outlineText.slice(0, 200));
+      throw new Error('Could not parse outline sections from response');
     }
 
-    // Build word allocation map
-    const wordAllocation = {};
-    enhancedSections.forEach(s => {
-      wordAllocation[s.section] = s.wordCount;
-    });
-
+    // Return condensed response format
     res.json({
-      sections: enhancedSections,
-      overallGuidance,
+      outline: outlineText,
       wordAllocation,
     });
 
@@ -862,13 +850,22 @@ app.post('/api/generate-document', async (req, res) => {
     return res.status(500).json({ error: 'OPENROUTER_API_KEY not set.' });
   }
 
-  const { outline, references, referenceStyle = 'APA 7', briefContext = {} } = req.body;
+  const { outline, references, referenceStyle = 'APA 7', briefContext = {}, tone = 'Academic', formatSettings = {} } = req.body;
 
   if (!outline || !Array.isArray(references)) {
     return res.status(400).json({ error: 'outline and references are required.' });
   }
 
   const { subject = 'Assignment', taskType = 'Essay', wordLimit = 2000, summary = '' } = briefContext;
+
+  // Parse section headings from the outline text to build a strict checklist
+  const parsedSections = (outline.match(/^[\d]+\.\s+(.+?)(?:\s*\(\d+\s*words?\))?$/gm) || [])
+    .map(m => m.replace(/^[\d]+\.\s+/, '').replace(/\s*\(\d+\s*words?\)$/, '').trim())
+    .filter(s => s.length > 0);
+
+  const sectionChecklist = parsedSections.length > 0
+    ? parsedSections.map(s => `- ## ${s}`).join('\n')
+    : '(Use the section headings found in the outline above)';
 
   // Format references for the prompt
   const refList = references
@@ -878,39 +875,43 @@ app.post('/api/generate-document', async (req, res) => {
     })
     .join('\n');
 
-  const systemPrompt = `You are an expert academic writer. Your role is to:
-1. Take an outline and expand it into a full, well-structured essay
-2. Integrate citations naturally using ${referenceStyle} format
-3. Ensure in-text citations appear where sources are referenced
-4. Maintain academic tone and proper paragraph structure
-5. Meet the specified word limit
+  const systemPrompt = `You are an expert academic writer. Your ONE job is to write a complete document that STRICTLY follows the provided outline.
 
-For in-text citations use this format:
-- Author (Year) for narrative citations
-- (Author, Year) for parenthetical citations
-- Use reference numbers [1], [2] etc. where applicable
+CRITICAL RULES — NEVER BREAK THESE:
+1. Every section heading from the outline MUST appear as a ## heading in your output, in EXACTLY the same order as the outline
+2. Do NOT add any sections that are not in the outline
+3. Do NOT skip any section from the outline
+4. Do NOT merge or split sections — follow the outline's exact structure
+5. Expand each section's content based on its word count allocation and bullet points
+6. Writing tone: ${tone} — maintain this tone consistently throughout the entire document
+7. Integrate citations naturally using ${referenceStyle} format
+8. For in-text citations: use Author (Year) for narrative, (Author, Year) for parenthetical
+9. Return ONLY the document body text with ## headings. Do NOT include a reference list.`;
 
-Return ONLY the full essay text with citations. Do NOT include a reference list.`;
-
-  const userPrompt = `Write a ${taskType.toLowerCase()} on "${subject}" using this outline and integrating the provided references.
+  const userPrompt = `Write a ${taskType.toLowerCase()} on "${subject}" that STRICTLY follows this outline.
 
 Word Limit: ~${wordLimit} words
-Style: ${referenceStyle}
+Reference Style: ${referenceStyle}
+Writing Tone: ${tone}
 Summary: ${summary}
 
-Outline:
+OUTLINE TO FOLLOW EXACTLY (do not deviate from this structure):
 ${outline}
 
-Available References:
+MANDATORY SECTION CHECKLIST — every one of these MUST appear as a ## heading in your output:
+${sectionChecklist}
+
+Available References to Cite:
 ${refList}
 
-Requirements:
-- Expand each section from the outline into 1-2 well-developed paragraphs
-- Integrate citations naturally throughout
-- Use ${referenceStyle} citation format
-- Maintain academic tone
-- Aim for approximately ${wordLimit} words total
-- Make it flow naturally from section to section`;
+REQUIREMENTS:
+- Follow the outline structure EXACTLY — same sections, same order, same headings
+- Each section heading from the outline must become a ## heading in the document
+- Expand each section into well-developed paragraphs matching its allocated word count
+- Integrate the available references naturally with ${referenceStyle} citations
+- Write in ${tone} tone throughout — do not shift tone between sections
+- Aim for approximately ${wordLimit} words total across all sections
+- Ensure smooth transitions between sections`;
 
   try {
     const response = await fetch(OPENROUTER_URL, {
@@ -986,7 +987,7 @@ Requirements:
       const paragraphs = [];
 
       // Helper function to parse text with markdown formatting (**, *, etc.)
-      const parseFormattedText = (text) => {
+      const parseFormattedText = (text, isBold = false, fontSize = 24) => { // fontSize in half-points (24 = 12pt)
         const runs = [];
         let remaining = text;
 
@@ -994,7 +995,12 @@ Requirements:
           // Match bold text: **text**
           const boldMatch = remaining.match(/^\*\*([^*]+)\*\*/);
           if (boldMatch) {
-            runs.push(new TextRun({ text: boldMatch[1], bold: true }));
+            runs.push(new TextRun({
+              text: boldMatch[1],
+              bold: true,
+              font: 'Times New Roman',
+              size: fontSize,
+            }));
             remaining = remaining.slice(boldMatch[0].length);
             continue;
           }
@@ -1002,7 +1008,12 @@ Requirements:
           // Match italic text: *text* (but not **)
           const italicMatch = remaining.match(/^\*([^*]+)\*(?!\*)/);
           if (italicMatch) {
-            runs.push(new TextRun({ text: italicMatch[1], italics: true }));
+            runs.push(new TextRun({
+              text: italicMatch[1],
+              italics: true,
+              font: 'Times New Roman',
+              size: fontSize,
+            }));
             remaining = remaining.slice(italicMatch[0].length);
             continue;
           }
@@ -1010,11 +1021,21 @@ Requirements:
           // Match regular text up to next special char
           const regularMatch = remaining.match(/^[^*]+/);
           if (regularMatch) {
-            runs.push(new TextRun(regularMatch[0]));
+            runs.push(new TextRun({
+              text: regularMatch[0],
+              bold: isBold,
+              font: 'Times New Roman',
+              size: fontSize,
+            }));
             remaining = remaining.slice(regularMatch[0].length);
           } else {
             // Fallback for single characters
-            runs.push(new TextRun(remaining.charAt(0)));
+            runs.push(new TextRun({
+              text: remaining.charAt(0),
+              bold: isBold,
+              font: 'Times New Roman',
+              size: fontSize,
+            }));
             remaining = remaining.slice(1);
           }
         }
@@ -1022,10 +1043,10 @@ Requirements:
         return runs;
       };
 
-      // Add title as heading
+      // Add title as heading (Heading 1: 14pt, bold, Times New Roman)
       paragraphs.push(
         new Paragraph({
-          text: title,
+          children: [new TextRun({ text: title, bold: true, font: 'Times New Roman', size: 28 })], // 28 half-points = 14pt
           heading: HeadingLevel.HEADING_1,
           spacing: { after: 400 },
           alignment: AlignmentType.JUSTIFIED,
@@ -1044,48 +1065,48 @@ Requirements:
         const h3Match = trimmedPara.match(/^###\s+(.+)$/);
 
         if (h1Match) {
-          // Heading 1
+          // Heading 1: 14pt, bold, Times New Roman
           paragraphs.push(
             new Paragraph({
-              text: h1Match[1],
+              children: parseFormattedText(h1Match[1], true, 28), // 28 half-points = 14pt, bold=true
               heading: HeadingLevel.HEADING_1,
               spacing: { before: 200, after: 200 },
               alignment: AlignmentType.JUSTIFIED,
             })
           );
         } else if (h2Match) {
-          // Heading 2
+          // Heading 2: 12pt, bold, Times New Roman
           paragraphs.push(
             new Paragraph({
-              text: h2Match[1],
+              children: parseFormattedText(h2Match[1], true, 24), // 24 half-points = 12pt, bold=true
               heading: HeadingLevel.HEADING_2,
               spacing: { before: 200, after: 200 },
               alignment: AlignmentType.JUSTIFIED,
             })
           );
         } else if (h3Match) {
-          // Heading 3
+          // Heading 3: 12pt, bold, Times New Roman
           paragraphs.push(
             new Paragraph({
-              text: h3Match[1],
+              children: parseFormattedText(h3Match[1], true, 24), // 12pt, bold=true
               heading: HeadingLevel.HEADING_3,
               spacing: { before: 120, after: 120 },
               alignment: AlignmentType.JUSTIFIED,
             })
           );
         } else if (trimmedPara.toLowerCase() === 'references') {
-          // Special case: References heading
+          // Special case: References heading (Heading 2: 12pt, bold)
           paragraphs.push(
             new Paragraph({
-              text: 'References',
+              children: [new TextRun({ text: 'References', bold: true, font: 'Times New Roman', size: 24 })],
               heading: HeadingLevel.HEADING_2,
               spacing: { before: 400, after: 200 },
               alignment: AlignmentType.JUSTIFIED,
             })
           );
         } else {
-          // Regular paragraph with formatting support
-          const runs = parseFormattedText(trimmedPara);
+          // Regular paragraph with formatting support (12pt, justified, Times New Roman)
+          const runs = parseFormattedText(trimmedPara, false, 24); // 24 half-points = 12pt
           paragraphs.push(
             new Paragraph({
               children: runs,
@@ -1096,6 +1117,55 @@ Requirements:
           );
         }
       });
+
+      // Add properly formatted references section if formatSettings includes references
+      if (formatSettings.referencesSection && references.length > 0) {
+        // Add References heading
+        paragraphs.push(
+          new Paragraph({
+            children: [new TextRun({ text: 'References', bold: true, font: 'Times New Roman', size: 24 })],
+            heading: HeadingLevel.HEADING_2,
+            spacing: { before: 400, after: 200 },
+            alignment: AlignmentType.JUSTIFIED,
+          })
+        );
+
+        // Add each reference as a separate paragraph
+        references.forEach((ref) => {
+          let refText = '';
+          if (referenceStyle.toLowerCase().includes('apa')) {
+            const authors = Array.isArray(ref.authors) ? ref.authors.join(', ') : ref.authors || 'Unknown';
+            refText = `${authors} (${ref.year}). ${ref.title}. ${ref.sourceName}.`;
+          } else if (referenceStyle.toLowerCase().includes('mla')) {
+            const authors = Array.isArray(ref.authors) ? ref.authors.join(', ') : ref.authors || 'Unknown';
+            refText = `${authors}. "${ref.title}." ${ref.sourceName}, ${ref.year}.`;
+          } else if (referenceStyle.toLowerCase().includes('harvard')) {
+            const authors = Array.isArray(ref.authors) ? ref.authors.join(', ') : ref.authors || 'Unknown';
+            refText = `${authors} ${ref.year}, ${ref.title}, ${ref.sourceName}.`;
+          } else {
+            const authors = Array.isArray(ref.authors) ? ref.authors.join(', ') : ref.authors || 'Unknown';
+            refText = `${authors} (${ref.year}). ${ref.title}. ${ref.sourceName}.`;
+          }
+
+          // Add URL/DOI if available
+          if (formatSettings.referencesWithLinks) {
+            if (ref.url) {
+              refText += ` Available at: ${ref.url}`;
+            } else if (ref.doi) {
+              refText += ` https://doi.org/${ref.doi}`;
+            }
+          }
+
+          paragraphs.push(
+            new Paragraph({
+              children: [new TextRun({ text: refText, font: 'Times New Roman', size: 24 })],
+              spacing: { line: 240, after: 200, before: 0 },
+              alignment: AlignmentType.JUSTIFIED,
+              indent: { firstLine: 720, left: 720 }, // Hanging indent for references
+            })
+          );
+        });
+      }
 
       const doc = new Document({
         sections: [{

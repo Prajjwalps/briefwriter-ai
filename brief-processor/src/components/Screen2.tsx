@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import {
   Sparkles, ArrowLeft, ArrowRight, Search, Copy, ExternalLink,
   Loader2, AlertCircle, BookOpen, Newspaper, Globe, Building2,
@@ -40,9 +40,9 @@ interface Filters {
 const CURRENT_YEAR = new Date().getFullYear();
 
 const DEFAULT_FILTERS: Filters = {
-  includeArticles:        true,
-  includeBooks:           true,
-  includeConferencePapers: true,
+  includeArticles:        false,
+  includeBooks:           false,
+  includeConferencePapers: false,
   includeDissertations:   false,
   includeReports:         false,
   includeNews:            false,
@@ -50,8 +50,8 @@ const DEFAULT_FILTERS: Filters = {
   includeGovernment:      false,
   includeIndustry:        false,
   fullTextOnly:           false,
-  peerReviewedOnly:       true,
-  languageEnglishOnly:    true,
+  peerReviewedOnly:       false,
+  languageEnglishOnly:    false,
   yearFrom:               CURRENT_YEAR - 10,
   yearTo:                 CURRENT_YEAR,
   maxResults:             10,
@@ -304,6 +304,15 @@ function ReferenceCard({
   );
 }
 
+// ── Progress labels ────────────────────────────────────────────────────────
+
+const PROGRESS_LABELS = [
+  'Querying academic databases…',
+  'Fetching sources…',
+  'Generating annotations…',
+  'Formatting references…',
+];
+
 // ── Main Screen2 component ─────────────────────────────────────────────────
 
 export default function Screen2({ data, onBack, onContinue }: Screen2Props) {
@@ -315,6 +324,34 @@ export default function Screen2({ data, onBack, onContinue }: Screen2Props) {
   const [results, setResults]              = useState<Reference[] | null>(null);
   const [showAllKeywords, setShowAllKeywords] = useState(false);
   const [selectedReferenceIds, setSelectedReferenceIds] = useState<Set<string>>(new Set());
+  const [progress, setProgress]            = useState(0);
+  const [progressLabel, setProgressLabel]  = useState('');
+  const timerRef                           = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const startProgress = () => {
+    setProgress(5);
+    setProgressLabel(PROGRESS_LABELS[0]);
+    let labelIdx = 0;
+    timerRef.current = setInterval(() => {
+      setProgress(p => {
+        if (p >= 88) return p;
+        const next = p + Math.random() * 7;
+        const newLabelIdx = Math.min(Math.floor((next / 90) * PROGRESS_LABELS.length), PROGRESS_LABELS.length - 1);
+        if (newLabelIdx !== labelIdx) {
+          labelIdx = newLabelIdx;
+          setProgressLabel(PROGRESS_LABELS[labelIdx]);
+        }
+        return next;
+      });
+    }, 700);
+  };
+
+  const finishProgress = () => {
+    if (timerRef.current) clearInterval(timerRef.current);
+    setProgress(100);
+    setProgressLabel('Done');
+    setTimeout(() => setProgress(0), 1200);
+  };
 
   const keywords     = context.keywords ?? [];
   const subject      = context.subject ?? '';
@@ -340,6 +377,7 @@ export default function Screen2({ data, onBack, onContinue }: Screen2Props) {
     setResults(null);
     setSelectedReferenceIds(new Set());
     setIsLoading(true);
+    startProgress();
 
     try {
       const body = {
@@ -384,6 +422,7 @@ export default function Screen2({ data, onBack, onContinue }: Screen2Props) {
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
+      finishProgress();
       setIsLoading(false);
     }
   }
@@ -660,6 +699,22 @@ export default function Screen2({ data, onBack, onContinue }: Screen2Props) {
             />
           </div>
         </div>
+
+        {/* ── Progress Bar ── */}
+        {progress > 0 && (
+          <div className="bg-white rounded-2xl border border-gray-200 p-5">
+            <div className="flex justify-between text-xs text-gray-500 mb-2">
+              <span>{progressLabel}</span>
+              <span>{Math.round(progress)}%</span>
+            </div>
+            <div className="w-full bg-gray-200 rounded-full h-0.5">
+              <div
+                className="h-0.5 bg-slate-900 rounded-full transition-all duration-500"
+                style={{ width: `${progress}%` }}
+              />
+            </div>
+          </div>
+        )}
 
         {/* ── Find References button ── */}
         <button

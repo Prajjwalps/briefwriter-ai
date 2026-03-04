@@ -14,7 +14,8 @@
       "Bash(curl -s -X POST http://localhost:3001/api/generate-document -H \"Content-Type: application/json\" -d '{:*)",
       "Bash(tasklist)",
       "Bash(xargs taskkill //PID //F)",
-      "Bash(mcp__Claude_Preview__preview_start brief-processor)"
+      "Bash(mcp__Claude_Preview__preview_start brief-processor)",
+      "Bash(xargs grep -l \"AnalysisPanel\\\\|progressBar\\\\|analysisProgress\")"
     ]
   }
 }
