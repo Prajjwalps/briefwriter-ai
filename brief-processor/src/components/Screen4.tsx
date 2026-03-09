@@ -100,6 +100,7 @@ export default function Screen4({ data, onBack, onComplete }: Screen4Props) {
           tone,
           formatSettings,
           outlineFullText: data.outlineText,
+          selectedModel: data.selectedModel || 'haiku',
         }),
       });
 
@@ -133,6 +134,7 @@ export default function Screen4({ data, onBack, onComplete }: Screen4Props) {
         body: JSON.stringify({
           selectedReferences: data.selectedReferences,
           referenceStyle: data.briefContext.detectedReferenceStyle || 'APA 7',
+          selectedModel: data.selectedModel || 'haiku',
         }),
       });
 

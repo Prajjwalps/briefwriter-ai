@@ -505,6 +505,7 @@ export interface Screen1Data {
   extraInstructions: string;
   referenceStyle: ReferenceStyle;
   wordLimit: WordLimit;
+  numSlides: number | '';
   context: BriefContext;
 }
 
@@ -525,6 +526,10 @@ export default function Screen1({ onContinue }: Screen1Props) {
 
   const [referenceStyle, setReferenceStyle] = useState<ReferenceStyle>('auto-detect');
   const [wordLimit, setWordLimit]           = useState<WordLimit>('auto-detect');
+
+  const [selectedModel, setSelectedModel] = useState<'sonnet' | 'haiku'>('haiku');
+  const [supportMaterialsOpen, setSupportMaterialsOpen] = useState(false);
+  const [numSlides, setNumSlides] = useState<number | ''>('');
 
   const [briefContext, setBriefContext] = useState<BriefContext>({ analysisComplete: false, analysisProgress: 0 });
   const [isAnalysing, setIsAnalysing]   = useState(false);
@@ -577,6 +582,7 @@ export default function Screen1({ onContinue }: Screen1Props) {
       console.log('[DEBUG] Setting analysisComplete to true');
       setBriefContext(prev => ({ ...prev, ...result, analysisComplete: true }));
       console.log('[DEBUG] briefContext state after update');
+      if (result.detectedNumSlides) setNumSlides(result.detectedNumSlides);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Analysis failed. Please try again.';
       setAnalysisError(msg);
@@ -633,7 +639,9 @@ export default function Screen1({ onContinue }: Screen1Props) {
       extraInstructions,
       referenceStyle,
       wordLimit,
+      numSlides,
       context: briefContext,
+      selectedModel,
     });
   };
 
@@ -679,6 +687,30 @@ export default function Screen1({ onContinue }: Screen1Props) {
             <p className="text-sm text-gray-500 mt-1">
               Upload your brief and fill in the settings, then click <span className="font-semibold text-gray-700">Analyse Brief</span> to begin.
             </p>
+            {/* ── Model Selection (compact) ── */}
+            <div className="flex items-center gap-2 mt-3">
+              <span className="text-xs text-gray-400">AI Model:</span>
+              <div className="flex items-center bg-gray-100 rounded-lg p-0.5">
+                <button
+                  onClick={() => setSelectedModel('haiku')}
+                  className={cn(
+                    'px-3 py-1 rounded-md text-xs font-semibold transition-all',
+                    selectedModel === 'haiku' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-400 hover:text-gray-600'
+                  )}
+                >
+                  🚀 Haiku
+                </button>
+                <button
+                  onClick={() => setSelectedModel('sonnet')}
+                  className={cn(
+                    'px-3 py-1 rounded-md text-xs font-semibold transition-all',
+                    selectedModel === 'sonnet' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-400 hover:text-gray-600'
+                  )}
+                >
+                  ✨ Sonnet
+                </button>
+              </div>
+            </div>
           </div>
 
           {/* ── Two-column layout ── */}
@@ -724,21 +756,33 @@ export default function Screen1({ onContinue }: Screen1Props) {
                 )}
               </div>
 
-              {/* Support Materials card */}
-              <div className="bg-white rounded-2xl border border-gray-200 p-5 space-y-3">
-                <div>
-                  <h3 className="text-sm font-bold text-gray-900">Support Materials</h3>
-                  <p className="text-xs text-gray-500 mt-0.5">Add additional materials to improve the analysis (optional)</p>
+              {/* Support Materials card — collapsible */}
+              <div className="bg-white rounded-2xl border border-gray-200 overflow-hidden">
+                <div
+                  className="flex items-center justify-between px-5 py-4 cursor-pointer hover:bg-gray-50 transition-colors select-none"
+                  onClick={() => setSupportMaterialsOpen(v => !v)}
+                >
+                  <div>
+                    <h3 className="text-sm font-bold text-gray-900">Support Materials</h3>
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      {materials.filter(m => m.enabled).length > 0
+                        ? `${materials.filter(m => m.enabled).length} material${materials.filter(m => m.enabled).length > 1 ? 's' : ''} added`
+                        : 'Optional — add materials to improve analysis'}
+                    </p>
+                  </div>
+                  <ChevronDown className={cn('w-4 h-4 text-gray-400 transition-transform duration-200 flex-shrink-0', supportMaterialsOpen && 'rotate-180')} />
                 </div>
-                <div className="space-y-2">
-                  {materials.map((mat, idx) => (
-                    <SupportMaterialRow
-                      key={mat.type}
-                      material={mat}
-                      onChange={(patch) => updateMaterial(idx, patch)}
-                    />
-                  ))}
-                </div>
+                {supportMaterialsOpen && (
+                  <div className="px-5 pb-5 space-y-2 border-t border-gray-100 pt-4">
+                    {materials.map((mat, idx) => (
+                      <SupportMaterialRow
+                        key={mat.type}
+                        material={mat}
+                        onChange={(patch) => updateMaterial(idx, patch)}
+                      />
+                    ))}
+                  </div>
+                )}
               </div>
 
             </div>
@@ -763,6 +807,28 @@ export default function Screen1({ onContinue }: Screen1Props) {
                     onChange={v => setWordLimit(v as WordLimit)}
                     options={WORD_LIMITS}
                     disabled={isAnalysing}
+                  />
+                </div>
+                <div className="mt-4">
+                  <label className="block text-xs font-semibold text-gray-500 uppercase tracking-widest mb-2">
+                    Number of Slides
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={100}
+                    value={numSlides}
+                    onChange={e => setNumSlides(e.target.value ? parseInt(e.target.value) : '')}
+                    placeholder={briefContext.detectedNumSlides
+                      ? `${briefContext.detectedNumSlides} detected`
+                      : 'e.g. 10 (for presentations)'}
+                    disabled={isAnalysing}
+                    className={cn(
+                      'w-full flex items-center px-4 py-3 rounded-lg border text-sm font-medium transition-all duration-150',
+                      'bg-white border-gray-200 hover:border-gray-400 placeholder:text-gray-400',
+                      'focus:outline-none focus:ring-2 focus:ring-slate-900/20',
+                      isAnalysing && 'opacity-50 pointer-events-none'
+                    )}
                   />
                 </div>
               </div>

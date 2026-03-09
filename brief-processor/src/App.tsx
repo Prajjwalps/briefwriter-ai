@@ -3,8 +3,9 @@ import Screen1, { Screen1Data } from '@/components/Screen1';
 import Screen2 from '@/components/Screen2';
 import Screen3 from '@/components/Screen3';
 import Screen4 from '@/components/Screen4';
+import Screen4PPT from '@/components/Screen4PPT';
 import ComingSoon from '@/components/ComingSoon';
-import { Reference } from '@/types';
+import { Reference, PptOptions } from '@/types';
 
 // ─── TEST MODE ───────────────────────────────────────────────────────────────
 // Read from a global set in index.html BEFORE React loads — prevents Parcel from
@@ -88,8 +89,11 @@ export default function App() {
   const [selectedReferenceIds, setSelectedReferenceIds] = useState<Set<string>>(TEST_MODE ? new Set(['ref1','ref2','ref3']) : new Set());
   const [outlineText, setOutlineText]                 = useState('');
   const [outlineTone, setOutlineTone]                 = useState('Academic');
+  const [outputMode, setOutputMode]                   = useState<'document' | 'presentation'>('document');
+  const [pptOptions, setPptOptions]                   = useState<PptOptions | null>(null);
 
   const handleScreen1Continue = (data: Screen1Data) => {
+    window.scrollTo(0, 0);
     setAppData(data);
     setScreen(2);
   };
@@ -102,8 +106,9 @@ export default function App() {
     return (
       <Screen2
         data={appData}
-        onBack={() => setScreen(1)}
+        onBack={() => { window.scrollTo(0, 0); setScreen(1); }}
         onContinue={(refs, refIds) => {
+          window.scrollTo(0, 0);
           setSelectedReferences(refs);
           setSelectedReferenceIds(refIds);
           setScreen(3);
@@ -121,31 +126,45 @@ export default function App() {
           selectedReferences,
           selectedReferenceIds,
         }}
-        onBack={() => setScreen(2)}
-        onContinue={(text, tone) => {
+        onBack={() => { window.scrollTo(0, 0); setScreen(2); }}
+        onContinue={(text, tone, mode, pptOpts) => {
+          window.scrollTo(0, 0);
           setOutlineText(text);
           setOutlineTone(tone);
+          setOutputMode(mode);
+          setPptOptions(pptOpts ?? null);
           setScreen(4);
         }}
       />
     );
   }
 
-  // Screen 4 - Final Outline
+  // Screen 4 - Document or Presentation
   if (screen === 4 && appData) {
+    const screen3Data = {
+      ...appData,
+      briefContext: appData.context,
+      selectedReferences,
+      selectedReferenceIds,
+      outlineText,
+      tone: outlineTone,
+    };
+
+    if (outputMode === 'presentation' && pptOptions) {
+      return (
+        <Screen4PPT
+          data={screen3Data}
+          pptOptions={pptOptions}
+          onBack={() => { window.scrollTo(0, 0); setScreen(3); }}
+        />
+      );
+    }
+
     return (
       <Screen4
-        data={{
-          ...appData,
-          briefContext: appData.context,
-          selectedReferences,
-          selectedReferenceIds,
-          outlineText,
-          tone: outlineTone,
-        }}
-        onBack={() => setScreen(3)}
+        data={screen3Data}
+        onBack={() => { window.scrollTo(0, 0); setScreen(3); }}
         onComplete={() => {
-          // Handle completion - could save to database, generate draft, etc.
           alert('Outline finalized! Ready for next steps.');
         }}
       />

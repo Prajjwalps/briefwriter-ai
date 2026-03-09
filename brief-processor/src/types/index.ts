@@ -131,11 +131,14 @@ export interface Screen3Data {
   currentScreen: number;
   selectedReferences: Reference[];
   selectedReferenceIds: Set<string>;
+  selectedModel: 'sonnet' | 'haiku';  // Claude model selection from Screen 1
+  numSlides?: number;                 // Number of slides (for presentation mode)
 }
 
 export interface BriefContext {
   detectedReferenceStyle?: ReferenceStyle;
   detectedWordLimit?: number;
+  detectedNumSlides?: number;
   subject?: string;
   taskType?: string;
   keywords?: string[];
@@ -156,6 +159,7 @@ export interface ProjectState {
   wordLimit: WordLimit;
   briefContext: BriefContext;
   currentScreen: number;
+  selectedModel: 'sonnet' | 'haiku';  // Claude model selection (default: 'haiku')
 }
 
 // ─── Screen 4: Sequential Document Generation ───────────────────────────
@@ -202,4 +206,39 @@ export interface GenerationState {
   documentText: string | null;     // Combined sections + references
   documentTitle: string;           // "Subject - TaskType"
   docxBase64: string | null;       // Base64-encoded DOCX file
+}
+
+// ─── PPT Generation ──────────────────────────────────────────────────────
+
+export interface PptOptions {
+  numSlides: number;
+  slidesTitles: string[];
+  scriptEnabled: boolean;
+  scriptWordsPerSlide: number;
+  scriptInstructions: string;
+}
+
+export interface PptSlide {
+  slideNumber: number;
+  title: string;
+  statements: string[];       // exactly 5 statements, ~15 words each
+  citations: string[];        // in-text citations extracted
+  script?: string;            // presenter notes paragraph
+  wordCount: number;
+  error?: string;
+}
+
+export interface PptGenerationState {
+  status: 'idle' | 'generating-slides' | 'generating-scripts' | 'assembling' | 'complete' | 'error';
+  totalSlides: number;
+  completedSlides: number;
+  currentSlide: string;
+  currentSlideIndex: number;
+  generatedSlides: { [slideNumber: number]: PptSlide };
+  generatingScript: boolean;
+  progress: number;
+  progressLabel: string;
+  error: string | null;
+  pptxBase64: string | null;
+  scriptDocxBase64: string | null;
 }

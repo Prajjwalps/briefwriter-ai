@@ -3,6 +3,7 @@ import { BriefContext, ReferenceStyle, SupportMaterial, OutlineSection } from '@
 interface AnalysisResult {
   referenceStyle: string | null;
   wordLimit: number | null;
+  numSlides: number | null;
   subject: string | null;
   taskType: string | null;
   keywords: string[];
@@ -154,6 +155,7 @@ export async function analyzeContent(
   const mapped: Partial<BriefContext> = {
     detectedReferenceStyle: (result.referenceStyle as ReferenceStyle) ?? undefined,
     detectedWordLimit:      result.wordLimit ?? undefined,
+    detectedNumSlides:      result.numSlides ?? undefined,
     subject:                result.subject ?? undefined,
     taskType:               result.taskType ?? undefined,
     keywords:               result.keywords ?? [],

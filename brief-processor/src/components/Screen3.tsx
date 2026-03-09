@@ -1,12 +1,53 @@
 import { useState, useEffect, useRef } from 'react';
-import { ArrowLeft, ArrowRight, Loader2, AlertCircle, RefreshCw, Sparkles } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Loader2, AlertCircle, RefreshCw, Sparkles, FileText, Presentation } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { EnhancedOutline, Screen3Data } from '@/types';
+import { EnhancedOutline, Screen3Data, PptOptions } from '@/types';
 
 interface Screen3Props {
   data: Screen3Data;
   onBack: () => void;
-  onContinue: (editedOutlineText: string, tone: string) => void;
+  onContinue: (
+    editedOutlineText: string,
+    tone: string,
+    outputMode: 'document' | 'presentation',
+    pptOptions?: PptOptions & { slidesTitles: string[] }
+  ) => void;
+}
+
+// Derive proposed slide titles from the outline text
+function deriveSliderTitles(outlineText: string, numSlides: number): string[] {
+  // Parse "1. Section Name (~N words)" lines
+  const regex = /^\d+\.\s+(.+?)(?:\s*\(~?\d+\s*words?\))?$/gm;
+  const sections: string[] = [];
+  let match;
+  while ((match = regex.exec(outlineText)) !== null) {
+    sections.push(match[1].trim());
+  }
+
+  if (sections.length === 0) {
+    // Fallback generic titles
+    const titles: string[] = [];
+    for (let i = 1; i <= numSlides; i++) {
+      if (i === 1) titles.push('Introduction');
+      else if (i === numSlides) titles.push('Conclusion');
+      else titles.push(`Slide ${i}`);
+    }
+    return titles;
+  }
+
+  if (sections.length >= numSlides) {
+    return sections.slice(0, numSlides);
+  }
+
+  // Fewer sections than slides — pad with sub-slides
+  const result: string[] = [];
+  for (let i = 0; i < numSlides; i++) {
+    const secIdx = Math.floor((i / numSlides) * sections.length);
+    const baseName = sections[Math.min(secIdx, sections.length - 1)];
+    const existingCount = result.filter(t => t === baseName || t.startsWith(baseName + ' (')).length;
+    result.push(existingCount === 0 ? baseName : `${baseName} (${existingCount + 1})`);
+  }
+  return result;
 }
 
 const TONE_OPTIONS = [
@@ -36,6 +77,14 @@ export default function Screen3({ data, onBack, onContinue }: Screen3Props) {
   const [progress, setProgress]               = useState(0);
   const [progressLabel, setProgressLabel]     = useState('');
   const timerRef                              = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Output mode state
+  const [outputMode, setOutputMode]           = useState<'document' | 'presentation'>('document');
+  const [pptNumSlides, setPptNumSlides]       = useState<number>(data.numSlides || 10);
+  const [slidesTitles, setSlidesTitles]       = useState<string[]>([]);
+  const [scriptEnabled, setScriptEnabled]     = useState(false);
+  const [scriptWordsPerSlide, setScriptWordsPerSlide] = useState(90);
+  const [scriptInstructions, setScriptInstructions]   = useState('');
 
   const context = data?.briefContext;
   const selectedReferences = data?.selectedReferences || [];
@@ -104,6 +153,10 @@ export default function Screen3({ data, onBack, onContinue }: Screen3Props) {
       }
 
       setOutlineText(generatedText);
+      // Refresh slide titles if in presentation mode
+      if (outputMode === 'presentation') {
+        setSlidesTitles(deriveSliderTitles(generatedText, pptNumSlides));
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to generate outline';
       setError(msg);
@@ -121,8 +174,30 @@ export default function Screen3({ data, onBack, onContinue }: Screen3Props) {
   };
 
   const handleContinue = () => {
-    if (outlineText.trim()) {
-      onContinue(outlineText, tone);
+    if (!outlineText.trim()) return;
+    if (outputMode === 'presentation') {
+      onContinue(outlineText, tone, 'presentation', {
+        numSlides: pptNumSlides,
+        slidesTitles,
+        scriptEnabled,
+        scriptWordsPerSlide,
+        scriptInstructions,
+      });
+    } else {
+      onContinue(outlineText, tone, 'document');
+    }
+  };
+
+  // Update slide titles when outline or numSlides changes
+  const handlePptNumSlidesChange = (n: number) => {
+    setPptNumSlides(n);
+    if (outlineText) setSlidesTitles(deriveSliderTitles(outlineText, n));
+  };
+
+  const handleOutputModeChange = (mode: 'document' | 'presentation') => {
+    setOutputMode(mode);
+    if (mode === 'presentation' && outlineText && slidesTitles.length === 0) {
+      setSlidesTitles(deriveSliderTitles(outlineText, pptNumSlides));
     }
   };
 
@@ -326,6 +401,133 @@ export default function Screen3({ data, onBack, onContinue }: Screen3Props) {
               </button>
             </div>
 
+            {/* Output Type selector */}
+            <div className="bg-white rounded-2xl border border-gray-200 p-6 mb-6">
+              <h3 className="text-sm font-bold text-gray-900 mb-1">Output Type</h3>
+              <p className="text-xs text-gray-500 mb-4">Choose what to generate from this outline</p>
+              <div className="flex gap-3 mb-0">
+                <button
+                  onClick={() => handleOutputModeChange('document')}
+                  className={cn(
+                    'flex-1 flex flex-col items-center py-3 px-4 rounded-lg border-2 text-sm font-semibold transition-all',
+                    outputMode === 'document'
+                      ? 'border-slate-900 bg-slate-900 text-white'
+                      : 'border-gray-200 text-gray-700 bg-white hover:border-gray-300'
+                  )}
+                >
+                  <span className="text-base mb-0.5">📄</span>
+                  Document
+                </button>
+                <button
+                  onClick={() => handleOutputModeChange('presentation')}
+                  className={cn(
+                    'flex-1 flex flex-col items-center py-3 px-4 rounded-lg border-2 text-sm font-semibold transition-all',
+                    outputMode === 'presentation'
+                      ? 'border-slate-900 bg-slate-900 text-white'
+                      : 'border-gray-200 text-gray-700 bg-white hover:border-gray-300'
+                  )}
+                >
+                  <span className="text-base mb-0.5">📊</span>
+                  Presentation
+                </button>
+              </div>
+
+              {outputMode === 'presentation' && (
+                <div className="space-y-5 mt-5 border-t border-gray-100 pt-5">
+                  {/* Number of slides */}
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-500 uppercase tracking-widest mb-2">
+                      Number of Slides
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={100}
+                      value={pptNumSlides}
+                      onChange={e => handlePptNumSlidesChange(Math.max(1, parseInt(e.target.value) || 1))}
+                      className="w-full px-4 py-2.5 rounded-lg border border-gray-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-900/20"
+                    />
+                  </div>
+
+                  {/* Editable slide titles */}
+                  {slidesTitles.length > 0 && (
+                    <div>
+                      <label className="block text-xs font-semibold text-gray-500 uppercase tracking-widest mb-1">
+                        Proposed Slide Structure
+                      </label>
+                      <p className="text-xs text-gray-400 mb-3">Review and edit slide titles before generating</p>
+                      <div className="space-y-1.5 max-h-60 overflow-y-auto pr-1">
+                        {slidesTitles.map((title, i) => (
+                          <div key={i} className="flex items-center gap-2">
+                            <span className="text-xs text-gray-400 w-5 text-right flex-shrink-0">{i + 1}.</span>
+                            <input
+                              value={title}
+                              onChange={e => setSlidesTitles(prev => prev.map((t, j) => j === i ? e.target.value : t))}
+                              className="flex-1 px-3 py-1.5 rounded-lg border border-gray-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-900/20"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Script toggle */}
+                  <div className="flex items-center justify-between py-1">
+                    <div>
+                      <p className="text-sm font-semibold text-gray-900">Include Presenter Script</p>
+                      <p className="text-xs text-gray-500">Generate speaker notes for each slide (Word download)</p>
+                    </div>
+                    <button
+                      onClick={() => setScriptEnabled(v => !v)}
+                      className={cn(
+                        'relative w-10 h-6 rounded-full transition-colors flex-shrink-0',
+                        scriptEnabled ? 'bg-slate-900' : 'bg-gray-200'
+                      )}
+                    >
+                      <span className={cn(
+                        'absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-transform',
+                        scriptEnabled ? 'translate-x-5' : 'translate-x-1'
+                      )} />
+                    </button>
+                  </div>
+
+                  {scriptEnabled && (
+                    <>
+                      <div>
+                        <label className="block text-xs font-semibold text-gray-500 uppercase tracking-widest mb-2">
+                          Words per Slide (Script)
+                        </label>
+                        <input
+                          type="number"
+                          min={30}
+                          max={300}
+                          value={scriptWordsPerSlide}
+                          onChange={e => setScriptWordsPerSlide(Math.max(30, parseInt(e.target.value) || 90))}
+                          className="w-full px-4 py-2.5 rounded-lg border border-gray-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-900/20"
+                        />
+                        <p className="text-xs text-gray-400 mt-1">Default 90 words (~45 seconds speaking time per slide)</p>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-gray-500 uppercase tracking-widest mb-2">
+                          Script Instructions (Optional)
+                        </label>
+                        <textarea
+                          value={scriptInstructions}
+                          onChange={e => setScriptInstructions(e.target.value)}
+                          placeholder="e.g. 'Use a friendly tone', 'Mention real-world examples', 'Include a question for the audience'…"
+                          className={cn(
+                            'w-full rounded-xl border border-gray-200 text-sm text-gray-800 px-4 py-3 resize-none',
+                            'placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-slate-900/20 focus:border-slate-400',
+                            'min-h-[80px]'
+                          )}
+                        />
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+
             {/* Navigation */}
             <div className="flex gap-3">
               <button
@@ -345,7 +547,8 @@ export default function Screen3({ data, onBack, onContinue }: Screen3Props) {
                     : 'bg-gray-200 text-gray-400 cursor-not-allowed'
                 )}
               >
-                Continue to Draft <ArrowRight className="w-4 h-4" />
+                {outputMode === 'presentation' ? 'Continue to Presentation' : 'Continue to Draft'}
+                <ArrowRight className="w-4 h-4" />
               </button>
             </div>
           </>

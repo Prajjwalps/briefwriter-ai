@@ -9,6 +9,7 @@ const mammoth  = require('mammoth');
 const path     = require('path');
 const fs       = require('fs');
 const { Document, Packer, Paragraph, HeadingLevel, AlignmentType, TextRun } = require('docx');
+const pptxgen  = require('pptxgenjs');
 
 const app    = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
@@ -28,8 +29,9 @@ Analyse the assignment brief above and return ONLY a valid JSON object with this
 {
   "referenceStyle": "<one of: apa7 | apa6 | mla9 | chicago17 | harvard | ieee | vancouver | oxford | oscola | null>",
   "wordLimit": <integer or null>,
+  "numSlides": <integer or null>,
   "subject": "<specific academic discipline, e.g. 'Nursing & Healthcare' | null>",
-  "taskType": "<one of: Essay | Research Paper | Report | Case Study | Dissertation / Thesis | Reflective Writing | Literature Review | Annotated Bibliography | null>",
+  "taskType": "<one of: Essay | Research Paper | Report | Case Study | Dissertation / Thesis | Reflective Writing | Literature Review | Annotated Bibliography | Presentation | null>",
   "keywords": ["<concept 1>", "<concept 2>", "...", "<concept N>"],
   "outline": [
     {
@@ -44,8 +46,9 @@ Analyse the assignment brief above and return ONLY a valid JSON object with this
 Rules:
 - referenceStyle: Detect from the brief. Return the slug if explicitly named or strongly implied (e.g. "Harvard referencing" → "harvard"). Return null if not found — the frontend defaults to APA 7.
 - wordLimit: Return the exact integer if stated (e.g. "2,000 words" → 2000). Return null if not found. Do NOT guess or estimate from page counts.
+- numSlides: If the brief asks for a presentation, return the number of slides if stated (e.g. "10 slides" → 10). Return null if not found or not a presentation task.
 - subject: Be specific (e.g. "Business Strategy", not just "Business"). Return null only if completely impossible.
-- taskType: Match to the closest listed value. Return null if unclear.
+- taskType: Match to the closest listed value. Use "Presentation" if the brief asks for slides/PowerPoint/presentation. Return null if unclear.
 - keywords: 5–8 substantive academic noun phrases central to this assignment (e.g. "supply chain resilience", "Gibbs reflective cycle"). Avoid generic terms like "essay" or "assignment".
 - outline: REQUIRED FIELD. Create 4–5 sections based on the brief structure:
   * "section": Clear section name (Introduction, Main Section 1, Main Section 2, Discussion, Conclusion, etc.)
@@ -862,6 +865,7 @@ app.post('/api/generate-section', async (req, res) => {
     referenceStyle = 'APA 7',
     tone = 'Academic',
     outlineFullText = '',
+    selectedModel = 'haiku',
   } = req.body;
 
   if (!sectionName || !wordCount) {
@@ -915,6 +919,13 @@ REQUIREMENTS:
 - Focus ONLY on this section's content
 - Return plain text only`;
 
+    // Map selected model to OpenRouter model ID
+    const modelMap = {
+      'sonnet': 'anthropic/claude-sonnet-4.6',
+      'haiku': 'anthropic/claude-haiku-4.5',
+    };
+    const modelToUse = modelMap[selectedModel] || OPENROUTER_MODEL;
+
     // Call Claude API with focused max_tokens for single section
     const response = await fetch(OPENROUTER_URL, {
       method: 'POST',
@@ -925,7 +936,7 @@ REQUIREMENTS:
         'X-Title': 'BriefWriter AI',
       },
       body: JSON.stringify({
-        model: OPENROUTER_MODEL,
+        model: modelToUse,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
@@ -1541,7 +1552,7 @@ app.post('/api/generate-docx-from-sections', async (req, res) => {
 // ── Generate References List ────────────────────────────────────────────────────
 app.post('/api/generate-references', async (req, res) => {
   try {
-    const { selectedReferences = [], referenceStyle = 'APA 7' } = req.body;
+    const { selectedReferences = [], referenceStyle = 'APA 7', selectedModel = 'haiku' } = req.body;
 
     if (!selectedReferences || selectedReferences.length === 0) {
       return res.status(400).json({ error: 'At least one reference is required.' });
@@ -1607,6 +1618,323 @@ app.post('/api/generate-references', async (req, res) => {
   } catch (err) {
     console.error('[server] Generate references error:', err.message);
     return res.status(502).json({ error: `Reference generation failed: ${err.message}` });
+  }
+});
+
+// ── PPT: Generate slide content ──────────────────────────────────────────────
+
+app.post('/api/generate-ppt-slide', async (req, res) => {
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) return res.status(500).json({ error: 'OPENROUTER_API_KEY not set.' });
+
+  const {
+    slideNumber, totalSlides, slideTitle, briefContext,
+    selectedReferences = [], referenceStyle = 'apa7', outlineText = '',
+    selectedModel = 'haiku',
+  } = req.body;
+
+  const model = selectedModel === 'sonnet'
+    ? 'anthropic/claude-sonnet-4-5'
+    : 'anthropic/claude-haiku-4.5';
+
+  // Build a short citation list for the prompt
+  const citationList = selectedReferences.slice(0, 20).map((r, i) =>
+    `[${i + 1}] ${r.authors?.[0] ?? 'Unknown'} (${r.year}) — ${r.title}`
+  ).join('\n');
+
+  const prompt = `You are generating slide ${slideNumber} of ${totalSlides} for a presentation about: "${briefContext?.subject ?? 'the topic'}".
+
+Slide title: "${slideTitle}"
+
+Brief summary: ${briefContext?.summary ?? ''}
+
+Available references (use 2-3 for in-text citations):
+${citationList || 'No references provided'}
+
+Task: Write EXACTLY 5 bullet point statements for this slide.
+- Each statement must be 12-15 words long
+- 2-3 statements should include an in-text citation in (Author, Year) format
+- Statements should be factual, concise, and suitable for a presentation slide
+- No sub-bullets, no markdown formatting, just plain statements
+
+Return ONLY a valid JSON array of exactly 5 strings, no other text:
+["Statement one here (Author, Year).", "Statement two here.", "Statement three (Author, Year).", "Statement four here.", "Statement five here."]`;
+
+  try {
+    const response = await fetch(OPENROUTER_URL, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'http://localhost:3001',
+        'X-Title': 'BriefWriter AI',
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: 'You generate concise, factual presentation slide content. Always respond with valid JSON arrays only.' },
+          { role: 'user', content: prompt },
+        ],
+        max_tokens: 512,
+      }),
+    });
+
+    if (!response.ok) {
+      const errBody = await response.text();
+      throw new Error(`OpenRouter ${response.status}: ${errBody}`);
+    }
+
+    const data = await response.json();
+    const raw = data.choices?.[0]?.message?.content ?? '';
+
+    // Parse JSON array
+    const fenceMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
+    const jsonStr = fenceMatch ? fenceMatch[1] : raw;
+    const statements = JSON.parse(jsonStr.trim());
+
+    if (!Array.isArray(statements)) throw new Error('Response is not a JSON array');
+
+    // Extract citations mentioned in statements
+    const citationRegex = /\(([A-Za-z\s&]+),?\s*(\d{4})\)/g;
+    const citations = [];
+    for (const stmt of statements) {
+      let m;
+      while ((m = citationRegex.exec(stmt)) !== null) {
+        citations.push(m[0]);
+      }
+    }
+
+    res.json({
+      success: true,
+      slideNumber,
+      slideTitle,
+      statements: statements.slice(0, 5),
+      citations: [...new Set(citations)],
+      wordCount: statements.join(' ').split(/\s+/).filter(w => w).length,
+    });
+
+  } catch (err) {
+    console.error('[server] generate-ppt-slide error:', err.message);
+    res.status(502).json({ error: err.message });
+  }
+});
+
+// ── PPT: Generate presenter script for one slide ─────────────────────────────
+
+app.post('/api/generate-ppt-script', async (req, res) => {
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) return res.status(500).json({ error: 'OPENROUTER_API_KEY not set.' });
+
+  const {
+    slideNumber, totalSlides, slideTitle, slideBullets = [],
+    scriptWordsPerSlide = 90, briefContext, scriptInstructions = '',
+    selectedModel = 'haiku',
+  } = req.body;
+
+  const model = selectedModel === 'sonnet'
+    ? 'anthropic/claude-sonnet-4-5'
+    : 'anthropic/claude-haiku-4.5';
+
+  const bulletsText = slideBullets.map((b, i) => `${i + 1}. ${b}`).join('\n');
+
+  const prompt = `You are a presenter giving slide ${slideNumber} of ${totalSlides} titled "${slideTitle}".
+
+The slide contains these bullet points:
+${bulletsText}
+
+Write a presenter script in simple, humble English as if speaking directly to the audience.
+Write EXACTLY ${scriptWordsPerSlide} words (within ±5 words) in paragraph form only — no bullet points, no headings, no lists.
+${scriptInstructions ? `Additional instructions: ${scriptInstructions}` : ''}
+
+Return ONLY the script text, no JSON, no preamble.`;
+
+  try {
+    const response = await fetch(OPENROUTER_URL, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'http://localhost:3001',
+        'X-Title': 'BriefWriter AI',
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: 'You write clear, concise presenter scripts for academic presentations. Return only the script text.' },
+          { role: 'user', content: prompt },
+        ],
+        max_tokens: 512,
+      }),
+    });
+
+    if (!response.ok) {
+      const errBody = await response.text();
+      throw new Error(`OpenRouter ${response.status}: ${errBody}`);
+    }
+
+    const data = await response.json();
+    const script = data.choices?.[0]?.message?.content?.trim() ?? '';
+
+    res.json({
+      success: true,
+      slideNumber,
+      script,
+      wordCount: script.split(/\s+/).filter(w => w).length,
+    });
+
+  } catch (err) {
+    console.error('[server] generate-ppt-script error:', err.message);
+    res.status(502).json({ error: err.message });
+  }
+});
+
+// ── PPT: Assemble PPTX file ───────────────────────────────────────────────────
+
+app.post('/api/generate-pptx', async (req, res) => {
+  const { title = 'Presentation', slides = [] } = req.body;
+
+  // Exact layout dimensions matching the reference PPTX (Case study 1.pptx):
+  // Slide: 13.33" x 7.5" (LAYOUT_WIDE)
+  // Title placeholder:   x=0.917", y=0.399", w=11.500", h=1.450"
+  // Content placeholder: x=0.917", y=2.000", w=11.500", h=4.759"
+  // Fonts: Calibri Light (title, 40pt bold), Calibri (body, 18pt)
+  // Colors: black text on white background, no decorative elements
+
+  const TITLE_X = 0.917, TITLE_Y = 0.399, TITLE_W = 11.5, TITLE_H = 1.45;
+  const BODY_X  = 0.917, BODY_Y  = 2.0,   BODY_W  = 11.5, BODY_H  = 4.759;
+
+  try {
+    const prs = new pptxgen();
+    prs.layout = 'LAYOUT_WIDE'; // 13.33" x 7.5"
+
+    for (const slide of slides) {
+      const s = prs.addSlide();
+
+      // White background
+      s.background = { color: 'FFFFFF' };
+
+      // Title — Calibri Light, 40pt, bold, black, left-aligned
+      s.addText(slide.title || `Slide ${slide.slideNumber}`, {
+        x: TITLE_X, y: TITLE_Y, w: TITLE_W, h: TITLE_H,
+        fontFace: 'Calibri Light',
+        fontSize: 40,
+        bold: true,
+        color: '000000',
+        align: 'left',
+        valign: 'middle',
+        wrap: true,
+        margin: 0,
+      });
+
+      // Bullet statements — one text box with all bullets, Calibri 18pt
+      // Build array of text runs for pptxgenjs multi-paragraph support
+      const statements = (slide.statements || []).slice(0, 5);
+      if (statements.length > 0) {
+        const textItems = statements.map((stmt, i) => ([
+          {
+            text: stmt,
+            options: {
+              bullet: { type: 'number', indent: 0 },
+              fontFace: 'Calibri',
+              fontSize: 18,
+              color: '000000',
+              breakLine: true,
+              paraSpaceBefore: i === 0 ? 0 : 6,
+            },
+          },
+        ])).flat();
+
+        s.addText(textItems, {
+          x: BODY_X, y: BODY_Y, w: BODY_W, h: BODY_H,
+          fontFace: 'Calibri',
+          fontSize: 18,
+          color: '000000',
+          align: 'left',
+          valign: 'top',
+          wrap: true,
+          margin: 0,
+          autoFit: true,
+        });
+      }
+    }
+
+    const pptxBase64 = await prs.write({ outputType: 'base64' });
+
+    res.json({
+      success: true,
+      pptxBase64,
+      title,
+      slideCount: slides.length,
+    });
+
+  } catch (err) {
+    console.error('[server] generate-pptx error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── PPT: Assemble script DOCX ─────────────────────────────────────────────────
+
+app.post('/api/generate-script-docx', async (req, res) => {
+  const { title = 'Presenter Script', slides = [] } = req.body;
+
+  try {
+    const children = [
+      new Paragraph({
+        text: title,
+        heading: HeadingLevel.TITLE,
+        spacing: { after: 400 },
+      }),
+    ];
+
+    for (const slide of slides) {
+      // Slide heading
+      children.push(new Paragraph({
+        children: [
+          new TextRun({
+            text: `Slide ${slide.slideNumber}: ${slide.title}`,
+            bold: true,
+            size: 28,
+          }),
+        ],
+        heading: HeadingLevel.HEADING_2,
+        spacing: { before: 400, after: 120 },
+      }));
+
+      // Bullet points (small, grey)
+      for (const stmt of (slide.statements || [])) {
+        children.push(new Paragraph({
+          children: [new TextRun({ text: `• ${stmt}`, color: '666666', size: 18 })],
+          spacing: { after: 60 },
+        }));
+      }
+
+      // Script paragraph
+      if (slide.script) {
+        children.push(new Paragraph({
+          children: [new TextRun({ text: slide.script, size: 22 })],
+          spacing: { before: 160, after: 320 },
+        }));
+      }
+    }
+
+    const doc = new Document({ sections: [{ children }] });
+    const buffer = await Packer.toBuffer(doc);
+    const docxBase64 = buffer.toString('base64');
+
+    const totalWords = slides.reduce((sum, s) => {
+      return sum + (s.script ? s.script.split(/\s+/).filter(w => w).length : 0);
+    }, 0);
+
+    res.json({
+      success: true,
+      docxBase64,
+      wordCount: totalWords,
+    });
+
+  } catch (err) {
+    console.error('[server] generate-script-docx error:', err.message);
+    res.status(500).json({ error: err.message });
   }
 });
 
